@@ -18,3 +18,6 @@ on mac terminal:
 ```
 ffplay -fflags nobuffer tcp://raspberrypi.local:8554
 ```
+
+## i have a gate detection dataset on roboflow
+my andrew account
