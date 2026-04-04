@@ -46,6 +46,13 @@ def load_steer_net(ckpt_path: Path, device: torch.device | None = None) -> tuple
     return model, meta, device
 
 
+def warmup_steer_net(ckpt_path: Path | str, device: torch.device | None = None) -> None:
+    """One forward pass so the first real camera frame is not paying cold-start cost."""
+    predict_steering_learned(
+        np.zeros((64, 64, 3), dtype=np.uint8), ckpt_path, device=device
+    )
+
+
 def predict_steering_learned(
     image_bgr: npt.NDArray[np.uint8],
     ckpt_path: Path | str,
@@ -55,12 +62,13 @@ def predict_steering_learned(
     model, meta, dev = load_steer_net(Path(ckpt_path), device)
     h, w = int(meta["img_h"]), int(meta["img_w"])
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
-    x = torch.from_numpy(rgb).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-    x = x.to(dev)
-    with torch.no_grad():
+    # INTER_LINEAR is faster than INTER_AREA on Pi for downscales; small effect on angle.
+    rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_LINEAR)
+    x = torch.from_numpy(rgb).permute(2, 0, 1).float().unsqueeze(0).div_(255.0)
+    x = x.to(dev, non_blocking=False)
+    with torch.inference_mode():
         out = model(x)[0]
-    s, c = float(out[0].cpu()), float(out[1].cpu())
+    s, c = out[0].item(), out[1].item()
     return math.atan2(s, c)
 
 

@@ -36,13 +36,15 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from release_pi_camera_pipeline import release_pi_camera_pipeline
+
 
 # =============================================================================
 # CV PARAMETERS (tuned from offline testing)
 # =============================================================================
 
 ROI_BOTTOM_FRACTION = 0.45
-SIDE_MARGIN_FRACTION = 0.20
+SIDE_MARGIN_FRACTION = 0.20  # was 0.35 — use more of frame width (matches headless)
 
 BLUR_KERNEL = 9
 BLOCK_SIZE = 201
@@ -75,21 +77,22 @@ LENS_POSITION = 3.0   # TUNE THIS with camera_test.py
 # PD CONTROLLER PARAMETERS
 # =============================================================================
 
-KP = 0.1       # proportional gain: degrees of servo per pixel of error
-KD = 0.0       # derivative gain: degrees of servo per pixel/frame of error change
+KP = 0.22      # proportional: deg per px lateral error
+KD = 0.055     # derivative: damps wobble (reduce if steering feels sluggish)
+K_HEADING = 0.12  # feedforward: deg per px of (far_band_x − near_band_x); anticipates curves (was unused)
 
 # Servo limits
 SERVO_CENTER = 90       # servo position for straight ahead (degrees)
 SERVO_MAX_OFFSET = 40   # max steering deflection from center (degrees)
 
 # Speed control
-NORMAL_SPEED = 70       # barely crawling
-SLOW_SPEED = 50
+NORMAL_SPEED = 25       # barely crawling
+SLOW_SPEED = 20
 ERROR_SLOW_THRESHOLD = 80  # if |error| > this, slow down
 
 # Lost line behavior
 MAX_LOST_FRAMES = 15    # hold last steering for this many frames when line lost
-LOST_SPEED = 50         # crawl speed when line is lost
+LOST_SPEED = 25         # crawl speed when line is lost
 
 
 # =============================================================================
@@ -295,23 +298,28 @@ def process_frame(frame_bgr: np.ndarray) -> dict:
 
 class LineFollowPD:
     """
-    PD controller that converts pixel error into servo angle.
+    PD + heading feedforward: pixel error -> servo angle.
 
     error > 0 means line is to the RIGHT of image center -> steer right
     error < 0 means line is to the LEFT of image center -> steer left
 
-    The derivative term is computed as the change in error between frames,
-    which damps oscillation on curves.
+    heading_trend = far_band_x - near_band_x (px): bend ahead in the image;
+    added as K_HEADING * heading_trend to turn into curves earlier.
+
+    The derivative term is the change in error between frames (damping).
     """
 
-    def __init__(self, kp: float, kd: float):
+    def __init__(self, kp: float, kd: float, k_heading: float):
         self.kp = kp
         self.kd = kd
+        self.k_heading = k_heading
         self.prev_error = 0.0
         self.last_valid_steering = 0.0
         self.lost_count = 0
 
-    def compute(self, error: float | None) -> tuple[float, float]:
+    def compute(
+        self, error: float | None, heading_trend: float | None = None
+    ) -> tuple[float, float]:
         """
         Args:
             error: pixel offset from center, or None if line lost
@@ -332,7 +340,12 @@ class LineFollowPD:
         d_error = error - self.prev_error
         self.prev_error = error
 
-        steering = self.kp * error + self.kd * d_error
+        ff = (
+            self.k_heading * heading_trend
+            if heading_trend is not None
+            else 0.0
+        )
+        steering = self.kp * error + self.kd * d_error + ff
         steering = max(-SERVO_MAX_OFFSET, min(SERVO_MAX_OFFSET, steering))
         self.last_valid_steering = steering
 
@@ -477,13 +490,17 @@ def visualize(results: dict, steering: float, speed: int) -> np.ndarray:
 # MAIN: LIVE CAMERA MODE
 # =============================================================================
 
-def run_live():
+def run_live(release_pipeline: bool = True):
     """
     Main loop: camera -> CV -> PD -> motors.
     This replaces the entire ESP8266 firmware. Everything runs on the Pi.
     """
     from picamera2 import Picamera2
     from libcamera import controls as libcam_controls
+
+    if release_pipeline:
+        print("Releasing camera pipeline (PipeWire / rpicam)…", flush=True)
+        release_pi_camera_pipeline()
 
     # --- Camera setup ---
     print("Initializing camera...")
@@ -515,11 +532,11 @@ def run_live():
     print(f"Camera locked — LensPosition: {LENS_POSITION}")
 
     # --- Controller + motors ---
-    pd = LineFollowPD(kp=KP, kd=KD)
+    pd = LineFollowPD(kp=KP, kd=KD, k_heading=K_HEADING)
     motors = MotorController(simulate=True)
 
     print("\nLine follower running. Press Ctrl+C to stop.")
-    print(f"PD gains: Kp={KP}, Kd={KD}")
+    print(f"PD gains: Kp={KP}, Kd={KD}, K_heading={K_HEADING}")
     print(f"Speed: normal={NORMAL_SPEED}, slow={SLOW_SPEED}")
 
     frame_count = 0
@@ -533,7 +550,9 @@ def run_live():
             results = process_frame(frame)
 
             # 3. PD controller -> steering angle + speed
-            steering, speed = pd.compute(results["error"])
+            steering, speed = pd.compute(
+                results["error"], results.get("heading_trend")
+            )
 
             # 4. Send commands to hardware
             motors.set_steering(steering)
@@ -575,7 +594,7 @@ def run_test(image_dir: str):
 
     print(f"Found {len(image_paths)} images. Arrow keys to navigate, q to quit.")
 
-    pd = LineFollowPD(kp=KP, kd=KD)
+    pd = LineFollowPD(kp=KP, kd=KD, k_heading=K_HEADING)
     idx = 0
 
     while True:
@@ -586,7 +605,9 @@ def run_test(image_dir: str):
 
         img_small = cv2.resize(img, (640, 480))
         results = process_frame(img_small)
-        steering, speed = pd.compute(results["error"])
+        steering, speed = pd.compute(
+            results["error"], results.get("heading_trend")
+        )
 
         vis = visualize(results, steering, int(speed))
         footer = f"[{idx+1}/{len(image_paths)}] {os.path.basename(image_paths[idx])}"
@@ -614,9 +635,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mobot line follower")
     parser.add_argument("--test_dir", type=str, default=None,
                         help="Image directory for offline testing (no motors)")
+    parser.add_argument(
+        "--no-pipeline-release",
+        action="store_true",
+        help="Do not kill other /dev/video* users or stop PipeWire before opening the camera",
+    )
     args = parser.parse_args()
 
     if args.test_dir:
         run_test(args.test_dir)
     else:
-        run_live()
+        run_live(release_pipeline=not args.no_pipeline_release)
