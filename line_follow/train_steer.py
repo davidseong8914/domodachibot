@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 from line_follow.label_dataset import SteeringLabelDataset, load_labels_jsonl  # noqa: E402
 from line_follow.splits import split_by_path_substrings, split_random  # noqa: E402
 from line_follow.steer_net import SteerNet  # noqa: E402
+from line_follow.torch_device import pick_device  # noqa: E402
 
 
 def angular_mae_deg(pred_theta: np.ndarray, gt_theta: np.ndarray) -> float:
@@ -71,9 +72,19 @@ def main() -> None:
         default=REPO_ROOT,
         help="Repository root for resolving relative image paths",
     )
-    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=40,
+        help="Fine-tuning epochs (default 40 suits ImageNet-pretrained backbone + ~1k–2k labels)",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-4,
+        help="AdamW lr (default 1e-4 for MobileNetV3-Small fine-tuning; use --lr 1e-3 for a small scratch CNN)",
+    )
     parser.add_argument(
         "--split",
         choices=["random", "clip"],
@@ -113,7 +124,7 @@ def main() -> None:
     parser.add_argument(
         "--augment",
         action="store_true",
-        help="Train-only random HSV, RGB gains, desat, rotation, Gaussian blur, noise",
+        help="Train-only photometric jitter: HSV, RGB gains, partial desat, Gaussian blur, noise (no rotation)",
     )
     parser.add_argument(
         "--log-every",
@@ -127,6 +138,12 @@ def main() -> None:
         type=Path,
         default=None,
         help="Write epoch,train_mse,val_mse,val_mae_deg,lr to this CSV (overwrites each run)",
+    )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda", "mps"],
+        default="auto",
+        help="auto: CUDA if available, else Apple Silicon MPS, else CPU",
     )
     args = parser.parse_args()
 
@@ -185,7 +202,22 @@ def main() -> None:
             test_ds, batch_size=min(args.batch_size, len(test_ds)), shuffle=False, drop_last=False
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "auto":
+        device = pick_device()
+    elif args.device == "cpu":
+        device = torch.device("cpu")
+    elif args.device == "cuda":
+        if not torch.cuda.is_available():
+            print("error: --device cuda but CUDA is not available", file=sys.stderr)
+            sys.exit(2)
+        device = torch.device("cuda")
+    else:
+        mps = getattr(torch.backends, "mps", None)
+        if mps is None or not mps.is_available():
+            print("error: --device mps but MPS is not available", file=sys.stderr)
+            sys.exit(2)
+        device = torch.device("mps")
+    print(f"device: {device}", flush=True)
     model = SteerNet().to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs))

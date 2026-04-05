@@ -30,5 +30,7 @@ runs/
 
 # Legacy per-folder viz paths
 test_1_0404_sunny/eval_viz/
-test_1_0404_sunny/eval_viz_2hz/
 test_1_0404_sunny/eval_viz_nn/
+
+# Local phone / scratch captures (video + frames; not part of robot session layout)
+Phone- nope/

@@ -1,7 +1,7 @@
 {
   "explorer.excludeGitIgnore": true,
   "search.exclude": {
-    "**/frames_5hz": true,
+    "**/frames_6hz": true,
     "**/eval_viz*": true,
     "**/*.jpg": true,
     "**/*.mp4": true

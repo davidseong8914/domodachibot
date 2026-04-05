@@ -16,7 +16,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from line_follow.imagenet_norm import normalize_rgb_01chw  # noqa: E402
 from line_follow.steer_net import SteerNet  # noqa: E402
+from line_follow.torch_device import pick_device  # noqa: E402
 
 _cached_path: Optional[Path] = None
 _cached_model: Optional[torch.nn.Module] = None
@@ -27,7 +29,7 @@ def load_steer_net(ckpt_path: Path, device: torch.device | None = None) -> tuple
     global _cached_path, _cached_model, _cached_meta
     ckpt_path = ckpt_path.resolve()
     if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = pick_device()
     if _cached_path == ckpt_path and _cached_model is not None and _cached_meta is not None:
         return _cached_model, _cached_meta, device  # type: ignore[return-value]
 
@@ -56,8 +58,8 @@ def predict_steering_learned(
     h, w = int(meta["img_h"]), int(meta["img_w"])
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
-    x = torch.from_numpy(rgb).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-    x = x.to(dev)
+    x = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
+    x = normalize_rgb_01chw(x).unsqueeze(0).to(dev)
     with torch.no_grad():
         out = model(x)[0]
     s, c = float(out[0].cpu()), float(out[1].cpu())

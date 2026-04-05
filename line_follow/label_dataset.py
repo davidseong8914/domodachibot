@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import Dataset
 
 from line_follow.angles import theta_from_origin_target
+from line_follow.imagenet_norm import normalize_rgb_01chw
 
 
 def load_labels_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -46,7 +47,7 @@ def theta_from_row(row: Dict[str, Any], width: int, height: int) -> float:
 
 
 def _augment_rgb_uint8(rgb: np.ndarray) -> np.ndarray:
-    """HSV + RGB color jitter, small rotation, blur, noise. Labels unchanged (mild geom only)."""
+    """Photometric augment only: HSV/RGB jitter, desat, blur, noise (no geometric warps)."""
     out = rgb
     if random.random() < 0.85:
         hsv = cv2.cvtColor(out, cv2.COLOR_RGB2HSV).astype(np.float32)
@@ -66,11 +67,6 @@ def _augment_rgb_uint8(rgb: np.ndarray) -> np.ndarray:
         gray3 = np.stack([gray, gray, gray], axis=-1).astype(np.float32)
         a = random.uniform(0.0, 0.22)
         out = np.clip(out.astype(np.float32) * (1.0 - a) + gray3 * a, 0.0, 255.0).astype(np.uint8)
-    if random.random() < 0.5:
-        angle = random.uniform(-4.0, 4.0)
-        h, w = out.shape[:2]
-        m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
-        out = cv2.warpAffine(out, m, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     if random.random() < 0.38:
         k = random.choice([3, 5])
         out = cv2.GaussianBlur(out, (k, k), 0)
@@ -82,7 +78,7 @@ def _augment_rgb_uint8(rgb: np.ndarray) -> np.ndarray:
 
 
 class SteeringLabelDataset(Dataset):
-    """BGR images resized to (H, W); targets are (sin(theta), cos(theta))."""
+    """BGR images resized to (H, W); inputs ImageNet-normalized RGB; targets (sin(theta), cos(theta))."""
 
     def __init__(
         self,
@@ -127,6 +123,7 @@ class SteeringLabelDataset(Dataset):
         if self.augment:
             rgb = _augment_rgb_uint8(rgb)
         x = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
+        x = normalize_rgb_01chw(x)
         s, c = math.sin(th), math.cos(th)
         y = torch.tensor([s, c], dtype=torch.float32)
         return x, y

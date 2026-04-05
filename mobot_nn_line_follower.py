@@ -7,7 +7,8 @@ Repo root must be on PYTHONPATH (run from repo root or from this folder — see 
 SSH on Pi (typical):
   cd ~/domodachibot   # or your clone path
   source .venv/bin/activate   # venv with torch + opencv + picamera2
-  python3 Mobot/mobot_nn_line_follower.py --weights line_follow/weights/steer.pt
+  python3 mobot_nn_line_follower.py --weights line_follow/weights/steer.pt
+  # or: python3 Mobot/mobot_nn_line_follower.py  (if kept under Mobot/)
 
 Training stays on the Mac; copy steer.pt to the Pi (scp/USB). Install PyTorch for Pi arm64 if needed.
 
@@ -25,10 +26,15 @@ import sys
 import time
 from pathlib import Path
 
-# domodachibot/ (parent of Mobot/)
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# Repo root = directory that contains line_follow/ (works if this file is in root or in Mobot/)
+_here = Path(__file__).resolve().parent
+REPO_ROOT = _here if (_here / "line_follow").is_dir() else _here.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+# Colleague scripts live in Mobot/
+_mobot_dir = REPO_ROOT / "Mobot"
+if _mobot_dir.is_dir() and str(_mobot_dir) not in sys.path:
+    sys.path.insert(0, str(_mobot_dir))
 
 from line_follow.learned_predict import predict_steering_learned  # noqa: E402
 

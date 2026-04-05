@@ -1,29 +1,24 @@
-"""Tiny CNN: image -> (sin(theta), cos(theta)) for steering."""
+"""Steering model: MobileNet V3 Small (ImageNet) -> (sin(theta), cos(theta))."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from torchvision.models import mobilenet_v3_small
 
 
 class SteerNet(nn.Module):
-    """Lightweight conv stack; input NCHW float RGB [0,1], output 2D (sin, cos)."""
+    """ImageNet-pretrained MobileNet V3 Small; input [B, 3, H, W] float RGB [0,1], output [B, 2] (sin, cos).
 
-    def __init__(self, in_ch: int = 3) -> None:
+    Torchvision's forward applies global average pooling on the feature map, then this module's
+    head is a single linear layer (replacing the default 1000-class classifier).
+    """
+
+    def __init__(self) -> None:
         super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(in_ch, 24, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(24, 48, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(48, 96, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(1),
-        )
-        self.head = nn.Linear(96, 2)
+        self.net = mobilenet_v3_small(weights="DEFAULT")
+        in_features = self.net.classifier[0].in_features
+        self.net.classifier = nn.Linear(in_features, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        z = self.features(x).flatten(1)
-        return self.head(z)
+        return self.net(x)

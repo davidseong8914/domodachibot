@@ -9,79 +9,109 @@ Notes for Pi camera streaming/recording and for **line-following** data + SteerN
 ### Layout
 
 - **`test_*_.../`** — one folder per capture session.
-- **`frames_5hz/`** — JPEGs named `frame_0001.jpg`, … (from `tools/extract_frames.py`).
-- **`labels_5hz.jsonl`** — one JSON object per line: `image`, `target_px` or `theta_rad` (see `line_follow/angles.py`).
-- **`labels_all_5hz.jsonl`** (repo root) — merged labels from all sessions (see below).
+- **`frames_6hz/`** — JPEGs named `frame_0001.jpg`, … from `tools/extract_frames.py --fps 6` (line-following dataset used for training here).
+- **`labels_6hz.jsonl`** — one JSON object per line: `image`, `target_px`, `theta_rad` (see `line_follow/angles.py`).
+- **`labels_all_6hz.jsonl`** (repo root) — merged labels from all sessions (later inputs override the same `image` key).
+
+Other frame rates are fine if you name folders consistently; **`extract_frames.py`** defaults to sparse **`--fps 0.2`** (one frame every 5 s) when you want fewer JPEGs.
 
 ### End-to-end workflow
 
-1. **Extract frames** from a video (default 0.2 Hz = one frame every 5 s):
+1. **Extract frames** at **6 fps** (example):
 
    ```bash
-   python3 tools/extract_frames.py path/to/video.mp4 -o test_x/frames_5hz
+   python3 tools/extract_frames.py path/to/video.mp4 -o test_x/frames_6hz --fps 6
    ```
 
-2. **Label** (click target pixel; bottom-center steering convention):
+2. **Label** (click target pixel; bottom-center steering convention). Use the project venv if `cv2` is missing; the flag is **`--frames-dir`**:
 
    ```bash
-   python3 tools/label_steering.py --frames test_x/frames_5hz --labels test_x/labels_5hz.jsonl
+   .venv/bin/python3 tools/label_steering.py --frames-dir test_x/frames_6hz --labels test_x/labels_6hz.jsonl
    ```
 
 3. **Optional: remove frames** (disk only). If you delete JPEGs, fix labels next.
 
    ```bash
-   python3 tools/prune_frames.py --dir test_x/frames_5hz --max-index 407    # drop index > 407
-   python3 tools/prune_frames.py --dir test_x/frames_5hz --drop-multiples-of 3  # drop 3,6,9,…
-   python3 tools/prune_frames.py -n --dir test_x/frames_5hz …   # dry-run
+   python3 tools/prune_frames.py --dir test_x/frames_6hz --max-index 407    # drop index > 407
+   python3 tools/prune_frames.py --dir test_x/frames_6hz --drop-multiples-of 3  # drop 3,6,9,…
+   python3 tools/prune_frames.py -n --dir test_x/frames_6hz …   # dry-run
    ```
 
 4. **Drop label rows** for missing files (rewrites the JSONL in place):
 
    ```bash
-   python3 tools/sync_labels_to_disk.py --labels test_x/labels_5hz.jsonl
+   python3 tools/sync_labels_to_disk.py --labels test_x/labels_6hz.jsonl
    ```
 
-5. **Merge** sessions into one pool (later inputs override same `image` key). All clips are **mixed**; split happens at train time.
+5. **Merge** sessions into one pool. All clips are **mixed**; split happens at train time.
 
    ```bash
    python3 tools/merge_labels.py \
-     test_1_0404_sunny/labels_5hz.jsonl \
-     test_2_0404_sunny/labels_5hz.jsonl \
-     test_3_0404_sunny/labels_5hz.jsonl \
-     test_4_0404_sunny/labels_5hz.jsonl \
-     -o labels_all_5hz.jsonl
+     test_1_0404_sunny/labels_6hz.jsonl \
+     test_2_0404_sunny/labels_6hz.jsonl \
+     test_3_0404_sunny/labels_6hz.jsonl \
+     test_4_0404_sunny/labels_6hz.jsonl \
+     -o labels_all_6hz.jsonl
    ```
 
-6. **Train** SteerNet with a **random split** on the merged file (default in `train_steer`): frames from every session can land in train, val, or test. Use `--val-frac` / `--test-frac` (defaults **0.15** each) and `--seed` for a reproducible shuffle. `--augment` applies random appearance on **train** only.
+6. **Train** SteerNet with a **random split** on the merged file: `--val-frac` / `--test-frac` (defaults **0.15** each), `--seed`, and **`--augment`** for train-only photometric jitter. Defaults: **40 epochs**, **lr 1e-4**, **ImageNet-normalized** inputs, **MobileNet V3 Small** (see below).
 
    ```bash
-   python3 -m line_follow.train_steer \
-     --labels labels_all_5hz.jsonl \
+   .venv/bin/python3 -m line_follow.train_steer \
+     --labels labels_all_6hz.jsonl \
      --split random \
      --val-frac 0.15 \
      --test-frac 0.15 \
      --seed 42 \
      --augment \
-     --out line_follow/weights/steer.pt
-   ```
-
-   **Monitor training:** by default metrics print every 10 epochs. Use `--log-every 1` for every epoch, `--csv-log runs/metrics.csv` to plot curves, and `pip install tqdm` for an epoch progress bar:
-
-   ```bash
-   python3 -m line_follow.train_steer \
-     --labels labels_all_5hz.jsonl \
-     --split random --val-frac 0.15 --test-frac 0.15 --seed 42 \
-     --augment --log-every 1 --csv-log runs/steer_metrics.csv \
+     --log-every 1 \
+     --csv-log runs/steer_metrics_6hz.csv \
      --out line_follow/weights/steer.pt
    ```
 
    **Clip split (optional):** hold out whole sessions by path substring, e.g. `--split clip --clip-val test_2_0404_sunny --clip-test test_3_0404_sunny`.
 
-7. **Eval / inference:** `python3 -m line_follow.eval …` (see `--help`), learned path `line_follow/learned_predict.py`, classical baseline `line_follow/predict.py`.
+7. **Eval / inference:** `python3 -m line_follow.eval …` (see `--help`), learned path `line_follow/learned_predict.py`, classical baseline `line_follow/predict.py`. For an MP4 with NN steering ray overlaid, use **`tools/nn_overlay_video.py`** (documented below).
 
 ### What `--augment` does (in training)
 
-Implemented in `line_follow/label_dataset.py` when the train dataset is built with `augment=True`: HSV jitter, per-channel RGB gains, partial desaturation, small in-plane rotation, Gaussian blur, additive Gaussian noise. **Labels are not changed** (fine for mild rotation and photometric noise).
+Implemented in `line_follow/label_dataset.py` when the train dataset is built with `augment=True`: HSV jitter, per-channel RGB gains, partial desaturation, Gaussian blur, additive Gaussian noise. **In-plane rotation was removed** so augmented views stay aligned with steering labels when using the ImageNet-pretrained backbone. **Labels are not changed.**
+
+### SteerNet architecture and input preprocessing
+
+- **Backbone:** `torchvision.models.mobilenet_v3_small` with **`weights="DEFAULT"`** (ImageNet). The default classifier is replaced by a single **`Linear` → 2 outputs** `(sin θ, cos θ)` after the built-in global average pool (`line_follow/steer_net.py`).
+- **Normalization:** Training and inference apply **ImageNet mean/std** on RGB in **[0, 1]** (`line_follow/imagenet_norm.py`, used from `label_dataset.py` and `learned_predict.py`). Checkpoints trained before this change are not compatible.
+- **Training defaults** (`line_follow/train_steer.py`): **`--epochs` 40**, **`--lr` 1e-4** (AdamW), cosine schedule; override as needed.
+- **Device:** **`--device auto`** (default) uses **CUDA → Apple MPS → CPU** (`line_follow/torch_device.py`). Inference uses the same auto order when `device` is omitted.
+- **Dependencies:** `torchvision` (backbone + `normalize`), `tqdm` (epoch bar). See `requirements.txt`.
+
+On Apple Silicon you should see **`device: mps`** at startup (or **`cuda`** on NVIDIA). Training saves the weights from the epoch with the lowest **validation MSE** (`best_val_mse` in the log).
+
+### Training run results (`labels_all_6hz.jsonl`, MobileNet V3 Small)
+
+| Item | Value |
+|------|--------|
+| Merged labeled frames | **1442** (`labels_all_6hz.jsonl`) |
+| Split | random 15% val / 15% test, `seed=42` |
+| Epochs | **40** (~**8 min** on MPS for this run; ~**12 s/epoch** with `tqdm`) |
+| Best **val MSE** (checkpoint) | **0.015597** (epoch ~35) |
+| Final epoch val MAE | ~**3.75°** |
+| Hold-out **test MSE** | **0.012512** |
+| Hold-out **test MAE** | **3.49°** |
+| Metrics log | `runs/steer_metrics_6hz.csv` |
+| Weights | `line_follow/weights/steer.pt` (+ `.meta.json`) |
+
+*Interpretation:* train MSE keeps falling while val wobbles late in the cosine schedule; the saved weights follow **best val MSE**, not the last epoch.
+
+### NN overlay on a video (Mac)
+
+Run the same checkpoint on every frame and write an MP4 (cyan ray + `theta` text from bottom center). Input can be full-res; internally the model still resizes to **`img_h` / `img_w` from the checkpoint meta** (default **120×160**).
+
+```bash
+.venv/bin/python3 tools/nn_overlay_video.py "path/to/video.mp4" -o "path/to/out_overlay.mp4"
+```
+
+Optional temporal smoothing (same idea as `line_follow.eval --smooth`): `--smooth 0.3`.
 
 ### Augmentation vs “how many images”
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract still frames from a video at a fixed frame rate using FFmpeg.
 
-Default fps=0.2 selects one frame every 5 seconds (1/5 Hz).
+Default fps=0.2 selects one frame every 5 seconds (sparse sampling).
 
 Angle / labeling convention for this repo lives in line_follow.angles (used by other tools).
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract frames from video via FFmpeg (e.g. 1 frame every 5 s with --fps 0.2)."
+        description="Extract frames from video via FFmpeg (e.g. 6 fps with --fps 6, or sparse with --fps 0.2)."
     )
     parser.add_argument("video", type=Path, help="Input video file")
     parser.add_argument(
