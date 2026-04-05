@@ -71,7 +71,7 @@ Other frame rates are fine if you name folders consistently; **`extract_frames.p
 
    **Clip split (optional):** hold out whole sessions by path substring, e.g. `--split clip --clip-val test_2_0404_sunny --clip-test test_3_0404_sunny`.
 
-7. **Eval / inference:** `python3 -m line_follow.eval …` (see `--help`), learned path `line_follow/learned_predict.py`, classical baseline `line_follow/predict.py`. For an MP4 with NN steering ray overlaid, use **`tools/nn_overlay_video.py`** (documented below).
+7. **Eval / inference:** `python3 -m line_follow.eval …` (see `--help`), learned path `line_follow/learned_predict.py`, classical baseline `line_follow/predict.py`. For an MP4 with NN steering ray overlaid, use **`tools/nn_overlay_video.py`** (documented below). **Live on the Pi** (camera + motors + optional browser preview): **`mobot_nn_line_follower.py`** — see [Pi: live NN line follow with SteerNet](#pi-live-nn-line-follow-with-steernet).
 
 ### What `--augment` does (in training)
 
@@ -143,13 +143,73 @@ rpicam-hello -t 0
 
 ---
 
+## Pi: live NN line follow with SteerNet
+
+On the Raspberry Pi, **`mobot_nn_line_follower.py`** runs **Picamera2** (main stream **640×480 BGR888**), predicts heading with **`predict_steering_learned`** (`line_follow/learned_predict.py` — **BGR → RGB**, resize to checkpoint **`img_w`×`img_h`**, **ImageNet normalize**, same **`SteerNet`** as training), and drives the **same GPIO motor/servo stack** as **`Mobot/mobot_line_follower_headless.py`**.
+
+**Weights:** copy **`line_follow/weights/steer.pt`** from the Mac after training (default path in the script). Checkpoint **meta** sets inference resize (typical **160×120**).
+
+### Python venv on the Pi
+
+Use a venv under the repo (e.g. **`~/Desktop/domodachibot/venv`**). You need **`torch`**, **`torchvision`**, **OpenCV**, **Picamera2**, **NumPy**, etc.
+
+Install **`torch` and `torchvision` from the same PyTorch CPU wheel index** so the aarch64 `+cpu` builds match (a plain **`pip install torchvision`** from PyPI alone can error with missing custom ops, e.g. `torchvision::nms`).
+
+```bash
+cd ~/Desktop/domodachibot
+python3 -m venv venv
+source venv/bin/activate
+pip install -U pip
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# plus repo deps: opencv-python, picamera2, … (see requirements / what the Mobot scripts need)
+```
+
+If **`pip`** later upgrades **NumPy** to **2.x** while an old **SciPy** is installed, you may see a resolver warning; fix by upgrading SciPy or pinning NumPy if something breaks.
+
+### Run (repo root)
+
+Stop anything else using the camera (**`rpicam-vid`**, another Python script, etc.) first.
+
+**Dry run (no GPIO — still uses the real camera):**
+
+```bash
+cd ~/Desktop/domodachibot
+source venv/bin/activate
+PYTHONUNBUFFERED=1 python3 mobot_nn_line_follower.py --simulate
+```
+
+**Drive the robot** (only when safe — removes `--simulate`):
+
+```bash
+PYTHONUNBUFFERED=1 python3 mobot_nn_line_follower.py
+```
+
+**Useful flags:** `--weights path/to/steer.pt`, **`--steer-sign -1`** if it steers the wrong way, **`--theta-gain`** to scale servo deflection vs. predicted angle.
+
+`PYTHONUNBUFFERED=1` makes **`theta` / servo** log lines show up immediately over SSH (line-buffered prints).
+
+### Browser preview (MJPEG + steering ray)
+
+To see **the same live frames** the NN uses, with a **heading ray** from the image bottom center (same convention as **`tools/nn_overlay_video.py`** / **`line_follow/angles.draw_ray`**) and on-screen **theta / servo / speed** text:
+
+```bash
+PYTHONUNBUFFERED=1 python3 mobot_nn_line_follower.py --simulate --preview-port 8080
+```
+
+- **On the Pi desktop:** open **`http://127.0.0.1:8080/`** in Chromium.
+- **From a laptop over SSH:** in one terminal, `ssh -L 8080:127.0.0.1:8080 pi@PI_IP`, then on the Pi run the command above; on the laptop open **`http://127.0.0.1:8080/`**.
+
+The server binds **`0.0.0.0`**. Default **`--preview-port 0`** disables the HTTP server. **You cannot** run this and **`rpicam-vid`** at the same time on one camera.
+
+---
+
 ## Stream to Mac (low latency)
 
 Use **raw H.264 over TCP** from the Pi and **ffplay on the Mac**. Avoid piping through VLC/RTSP if you care about delay—RTSP tends to add a lot of buffering.
 
 ### 1. On the Pi (SSH session)
 
-Stop any old stream first, then:
+Stop any old stream first, and **release the camera** from other apps (e.g. **`mobot_nn_line_follower.py`**, Jupyter, another `rpicam-*` process), then:
 
 ```bash
 pkill rpicam-vid 2>/dev/null; pkill vlc 2>/dev/null; sleep 1
@@ -214,3 +274,11 @@ ffmpeg -i ~/Desktop/recording.h264 -c copy ~/Desktop/recording.mp4
 ## Roboflow
 
 Gate detection dataset on Roboflow — Andrew account.
+
+
+
+
+# run this 
+```
+PYTHONUNBUFFERED=1 python3 mobot_nn_line_follower.py --simulate --preview-port 8080
+```
