@@ -27,12 +27,23 @@ from libcamera import controls
 import cv2
 import numpy as np
 
+from release_pi_camera_pipeline import release_pi_camera_pipeline
+
 
 def main():
     parser = argparse.ArgumentParser(description="Camera test and tuning")
     parser.add_argument("--save_frames", type=int, default=0,
                         help="Save N frames to disk and exit (headless mode)")
+    parser.add_argument(
+        "--no-pipeline-release",
+        action="store_true",
+        help="Do not kill other /dev/video* users or stop PipeWire before opening the camera",
+    )
     args = parser.parse_args()
+
+    if not args.no_pipeline_release:
+        print("Releasing camera pipeline (prior users + PipeWire / rpicam)…", flush=True)
+        release_pi_camera_pipeline()
 
     # --- Initialize camera ---
     print("Initializing camera...")

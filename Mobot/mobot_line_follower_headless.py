@@ -5,6 +5,11 @@ Mobot Line Follower — Headless Version (no display required)
 Same as mobot_line_follower.py but with visualization disabled.
 Run this when no monitor/VNC/X11 is available.
 
+Camera config:
+- Focus locked (so autofocus doesn't hunt mid-run)
+- Exposure + white balance left on AUTO (so the camera adapts to
+  changing lighting as the robot moves through shade and sunlight)
+
 Usage:
     python mobot_line_follower_headless.py
     # Press Ctrl+C to stop
@@ -21,22 +26,24 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from release_pi_camera_pipeline import release_pi_camera_pipeline
+
 
 # =============================================================================
 # CV PARAMETERS (tuned from offline testing)
 # =============================================================================
 
 ROI_BOTTOM_FRACTION = 0.45
-SIDE_MARGIN_FRACTION = 0.15
+SIDE_MARGIN_FRACTION = 0.20
 
 BLUR_KERNEL = 9
-BLOCK_SIZE = 201
+BLOCK_SIZE = 401
 THRESH_C = -4
 MORPH_KERNEL = 5
-CLOSE_KERNEL_SIZE = 15
+CLOSE_KERNEL_SIZE = 20
 
 BAND_HEIGHT = 20
-BAND_FRACTIONS = (0.70, 0.45)
+BAND_FRACTIONS = (0.35, 0.25)
 
 MIN_WHITE_PIXELS_PER_COL = 3
 MIN_SEGMENT_WIDTH = 12
@@ -55,14 +62,14 @@ LENS_POSITION = 3.0
 # PD CONTROLLER PARAMETERS
 # =============================================================================
 
-KP = 0.2
-KD = 0.0
+KP = 0.3
+KD = 0.1
 
 SERVO_CENTER = 90
 SERVO_MAX_OFFSET = 40
 
-NORMAL_SPEED = 150
-SLOW_SPEED = 100
+NORMAL_SPEED = 70
+SLOW_SPEED = 50
 ERROR_SLOW_THRESHOLD = 80
 
 MAX_LOST_FRAMES = 15
@@ -317,9 +324,13 @@ class MotorController:
 # MAIN: HEADLESS LIVE MODE
 # =============================================================================
 
-def run_live():
+def run_live(release_pipeline: bool = True):
     from picamera2 import Picamera2
     from libcamera import controls as libcam_controls
+
+    if release_pipeline:
+        print("Releasing camera pipeline (PipeWire / rpicam)…", flush=True)
+        release_pi_camera_pipeline()
 
     print("Initializing camera...")
     picam2 = Picamera2()
@@ -329,23 +340,18 @@ def run_live():
     picam2.configure(config)
     picam2.start()
 
-    print("Waiting for auto-exposure to settle...")
-    time.sleep(2)
+    # Let the camera pipeline warm up
+    time.sleep(1)
 
-    metadata = picam2.capture_metadata()
-    auto_exposure = metadata["ExposureTime"]
-    auto_gain = metadata["AnalogueGain"]
-    auto_wb = metadata.get("ColourGains", (1.0, 1.0))
-    print(f"Auto settings — Exposure: {auto_exposure}us, "
-          f"Gain: {auto_gain:.2f}, WB: {auto_wb}")
-
+    # Lock focus only. Exposure and white balance stay on AUTO
+    # so the camera adapts continuously as lighting changes.
     picam2.set_controls({
-    "AfMode": libcam_controls.AfModeEnum.Manual,
-    "LensPosition": LENS_POSITION,
-    # Leave AeEnable and AwbEnable at default (auto-on)
+        "AfMode": libcam_controls.AfModeEnum.Manual,
+        "LensPosition": LENS_POSITION,
     })
     time.sleep(0.5)
-    print(f"Camera locked — LensPosition: {LENS_POSITION}")
+    print(f"Focus locked at LensPosition: {LENS_POSITION}")
+    print("Exposure and white balance: AUTO")
 
     pd = LineFollowPD(kp=KP, kd=KD)
     motors = MotorController(simulate=False)
@@ -385,4 +391,11 @@ def run_live():
 
 
 if __name__ == "__main__":
-    run_live()
+    p = argparse.ArgumentParser(description="Mobot line follower (headless)")
+    p.add_argument(
+        "--no-pipeline-release",
+        action="store_true",
+        help="Do not kill other /dev/video* users or stop PipeWire before opening the camera",
+    )
+    args = p.parse_args()
+    run_live(release_pipeline=not args.no_pipeline_release)
